@@ -17,18 +17,65 @@ class QueryResponse(BaseModel):
     answer: str
 
 
-# Function to check and log kubeconfig path
 def get_kubeconfig_path():
-    # Default kubeconfig path
+    """
+    Determines the location of the kubeconfig file.
+    Checks if the kubeconfig file exists at the default path and logs its location.
+    """
     kubeconfig_path = os.path.expanduser("~/.kube/config")
-
-    # Check if the file exists
     if os.path.exists(kubeconfig_path):
         logging.info(f"Kubeconfig found at: {kubeconfig_path}")
     else:
         logging.warning(f"Kubeconfig file not found at: {kubeconfig_path}")
-
     return kubeconfig_path
+
+
+def load_kube_config():
+    """Load kubeconfig using the dynamically determined path."""
+    config_path = get_kubeconfig_path()
+    config.load_kube_config(config_file=config_path)
+
+
+def cluster_info():
+    """
+    Retrieves basic cluster information, such as Kubernetes version and the number of nodes.
+    """
+    load_kube_config()
+    v1 = client.CoreV1Api()
+    version_info = client.VersionApi().get_code()
+    nodes = v1.list_node()
+
+    cluster_info = {
+        "kubernetes_version": version_info.git_version,
+        "number_of_nodes": len(nodes.items),
+        "nodes": [node.metadata.name for node in nodes.items]
+    }
+
+    logging.info(f"Cluster Information: {cluster_info}")
+    return cluster_info
+
+
+def pod_info(namespace="default"):
+    """
+    Retrieves basic pod information for a given namespace.
+    """
+    load_kube_config()
+    v1 = client.CoreV1Api()
+    pods = v1.list_namespaced_pod(namespace=namespace)
+
+    pod_details = []
+    for pod in pods.items:
+        pod_info = {
+            "pod_name": pod.metadata.name,
+            "namespace": pod.metadata.namespace,
+            "status": pod.status.phase,
+            "node_name": pod.spec.node_name,
+            "containers": [container.name for container in pod.spec.containers]
+        }
+        pod_details.append(pod_info)
+
+    logging.info(f"Pod Information for namespace '{namespace}': {pod_details}")
+    return pod_details
 
 
 @app.route('/query', methods=['POST'])
@@ -41,29 +88,27 @@ def create_query():
         # Log the question
         logging.info(f"Received query: {query}")
 
-        # Check kubeconfig path
-        kubeconfig_path = get_kubeconfig_path()
-
-        # Load kubeconfig if present
-        if os.path.exists(kubeconfig_path):
-            config.load_kube_config(config_file=kubeconfig_path)
-            v1 = client.CoreV1Api()
-
-            # Sample Kubernetes query: list namespaces
-            namespaces = v1.list_namespace()
-            logging.info("Successfully loaded kubeconfig and listed namespaces.")
-            logging.info(f"Namespaces: {[ns.metadata.name for ns in namespaces.items]}")
+        # Determine the answer based on the query
+        if "cluster info" in query.lower():
+            answer = cluster_info()
+        elif "pod info" in query.lower():
+            # Check if the namespace is specified in the query
+            namespace = "default"
+            if "namespace" in query.lower():
+                try:
+                    namespace = query.lower().split("namespace")[1].strip()
+                except IndexError:
+                    namespace = "default"
+            answer = pod_info(namespace)
         else:
-            logging.warning(f"Kubeconfig file not found. Unable to connect to the cluster.")
+            # For simplicity, return a default response if the query does not match
+            answer = "Query not recognized. Please specify 'cluster info' or 'pod info'."
 
-        # For simplicity, we'll just echo the question back in the answer
-        answer = "This is a sample answer."
-
-        # Log the answer
+        # Log the generated answer
         logging.info(f"Generated answer: {answer}")
 
         # Create the response model
-        response = QueryResponse(query=query, answer=answer)
+        response = QueryResponse(query=query, answer=str(answer))
 
         return jsonify(response.dict())
 
