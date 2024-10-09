@@ -16,7 +16,7 @@ class QueryResponse(BaseModel):
 
 
 def get_cluster_info():
-    config.load_kube_config()
+    config.load_incluster_config()
     version_info = client.VersionApi().get_code()
     clientv1 = client.CoreV1Api()
     return {
