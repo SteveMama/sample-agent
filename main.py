@@ -3,6 +3,7 @@ import os
 from flask import Flask, request, jsonify
 from kubernetes import config, client
 from pydantic import BaseModel, ValidationError
+from langchain import OpenAI, LLMChain, PromptTemplate
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG,
@@ -11,6 +12,8 @@ logging.basicConfig(level=logging.DEBUG,
 
 app = Flask(__name__)
 
+# Fetch OpenAI API key from environment variables
+openai_key_api = os.environ.get('OPENAI_API_KEY')
 
 class QueryResponse(BaseModel):
     query: str
@@ -106,6 +109,19 @@ def pod_info(namespace="default"):
     return pod_details
 
 
+def create_prompt(query, cluster_data):
+    """Creates a natural language prompt based on the query and cluster details."""
+    prompt_template = f"""
+    You are a Kubernetes assistant. The user asked: '{query}'. Here is the cluster information:
+    - Kubernetes Version: {cluster_data['kubernetes_version']}
+    - Number of Nodes: {cluster_data['number_of_nodes']}
+    - Nodes: {', '.join(cluster_data['nodes'])}
+    
+    Please provide a concise and accurate response.
+    """
+    return prompt_template
+
+
 @app.route('/query', methods=['POST'])
 def create_query():
     try:
@@ -119,32 +135,31 @@ def create_query():
         # Log cluster details irrespective of the query
         log_cluster_details()
 
-        # Determine the answer based on the query
-        if "cluster info" in query.lower():
-            answer = cluster_info()
-        elif "pod info" in query.lower():
-            # Check if the namespace is specified in the query
-            namespace = "default"
-            if "namespace" in query.lower():
-                try:
-                    namespace = query.lower().split("namespace")[1].strip()
-                except IndexError:
-                    namespace = "default"
-            answer = pod_info(namespace)
-        else:
-            # For simplicity, return a default response if the query does not match
-            answer = "Query not recognized. Please specify 'cluster info' or 'pod info'."
+        # Get basic cluster information for context
+        cluster_data = cluster_info()
+
+        # Create a natural language prompt based on the query and cluster details
+        prompt = create_prompt(query, cluster_data)
+
+        # Initialize the LangChain OpenAI agent
+        openai_llm = OpenAI(temperature=0.3, openai_api_key=openai_key_api)
+        
+        # Use LangChain to generate a response
+        llm_response = openai_llm(prompt)
 
         # Log the generated answer
-        logging.info(f"Generated answer: {answer}")
+        logging.info(f"Generated answer: {llm_response}")
 
         # Create the response model
-        response = QueryResponse(query=query, answer=str(answer))
+        response = QueryResponse(query=query, answer=llm_response)
 
         return jsonify(response.dict())
 
     except ValidationError as e:
         return jsonify({"error": e.errors()}), 400
+    except Exception as ex:
+        logging.error(f"An unexpected error occurred: {ex}")
+        return jsonify({"error": "An internal error occurred"}), 500
 
 
 if __name__ == "__main__":
