@@ -1,4 +1,4 @@
-import logging
+import logging, os
 from flask import Flask, request, jsonify
 from pydantic import BaseModel, ValidationError
 from kubernetes import client, config
@@ -15,11 +15,12 @@ class QueryResponse(BaseModel):
     query: str
     answer: str
 
+config_path = os.path.expanduser("~/.kube/config")
+
 
 
 # Load kubeconfig from the default location (~/.kube/config) or provide the path
-config.load_kube_config()
-
+config.load_kube_config(config_file=config_path)
 # Create a Kubernetes API client
 v1 = client.CoreV1Api()
 print("Listing nodes in the cluster:")
