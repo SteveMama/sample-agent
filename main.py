@@ -3,8 +3,6 @@ import os
 from flask import Flask, request, jsonify
 from kubernetes import config, client
 from pydantic import BaseModel, ValidationError
-from langchain import OpenAI
-
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG,
@@ -13,9 +11,83 @@ logging.basicConfig(level=logging.DEBUG,
 
 app = Flask(__name__)
 
-# Get the OpenAI API key from the environment variables
-openai_api_key = os.environ.get('OPENAI_API_KEY')
 
+class QueryResponse(BaseModel):
+    query: str
+    prompt: str
+    answer: str
+
+
+def get_kubeconfig_path():
+    """
+    Determines the location of the kubeconfig file.
+    Checks if the kubeconfig file exists at the default path and logs its location.
+    """
+    kubeconfig_path = os.path.expanduser("~/.kube/config")
+    if os.path.exists(kubeconfig_path):
+        logging.info(f"Kubeconfig found at: {kubeconfig_path}")
+    else:
+        logging.warning(f"Kubeconfig file not found at: {kubeconfig_path}")
+    return kubeconfig_path
+
+
+def load_kube_config():
+    """Load kubeconfig using the dynamically determined path."""
+    config_path = get_kubeconfig_path()
+    config.load_kube_config(config_file=config_path)
+
+
+def log_cluster_details():
+    """Logs the namespaces, pods, ports, and nodes for the entire cluster."""
+    load_kube_config()
+    v1 = client.CoreV1Api()
+
+    # Log Namespaces
+    namespaces = v1.list_namespace()
+    logging.info(f"Namespaces: {[ns.metadata.name for ns in namespaces.items]}")
+
+    # Log Pods Information
+    all_pods = v1.list_pod_for_all_namespaces()
+    pod_info = [{"namespace": pod.metadata.namespace, "name": pod.metadata.name, "status": pod.status.phase} for pod in all_pods.items]
+    logging.info(f"Pods Information: {pod_info}")
+
+    # Log Nodes Information
+    nodes = v1.list_node()
+    node_info = [{"node_name": node.metadata.name, "capacity": node.status.capacity, "addresses": [addr.address for addr in node.status.addresses]} for node in nodes.items]
+    logging.info(f"Nodes Information: {node_info}")
+
+    # Log Service Ports Information
+    services = v1.list_service_for_all_namespaces()
+    service_ports = []
+    for service in services.items:
+        ports = [{"port": port.port, "target_port": port.target_port, "protocol": port.protocol} for port in service.spec.ports]
+        service_ports.append({"service_name": service.metadata.name, "namespace": service.metadata.namespace, "ports": ports})
+    logging.info(f"Service Ports Information: {service_ports}")
+
+
+def aggregate_info():
+    """Aggregate various Kubernetes information into a single structure."""
+    load_kube_config()
+    cluster_info = get_cluster_info()
+    node_info = get_node_info()
+    namespace_info = get_namespace_info()
+    workload_info = get_workload_info()
+    service_info = get_service_info()
+    pod_info = get_pod_info()
+    container_info = get_container_info(pod_info)
+
+    combined_info = {
+        "Cluster Information": cluster_info,
+        "Node Information": node_info,
+        "Namespace Information": namespace_info,
+        "Workload Information": workload_info,
+        "Service Information": service_info,
+        "Pod Information": pod_info,
+        "Container Information": container_info,
+    }
+
+    logging.info(f"Aggregated Info: {combined_info}")
+    return combined_info
 
 
 def generate_prompt(combined_info, query):
@@ -70,87 +142,40 @@ def generate_prompt(combined_info, query):
     return prompt_template
 
 
-class QueryResponse(BaseModel):
-    query: str
-    prompt: str
-    answer: str
+def cluster_info():
+    """Retrieves basic cluster information, such as Kubernetes version and the number of nodes."""
+    v1 = client.CoreV1Api()
+    version_info = client.VersionApi().get_code()
+    nodes = v1.list_node()
+
+    cluster_info = {
+        "kubernetes_version": version_info.git_version,
+        "number_of_nodes": len(nodes.items),
+        "nodes": [node.metadata.name for node in nodes.items]
+    }
+
+    logging.info(f"Cluster Information: {cluster_info}")
+    return cluster_info
 
 
-def get_kubeconfig_path():
-    """Determines the location of the kubeconfig file."""
-    try:
-        kubeconfig_path = os.path.expanduser("~/.kube/config")
-        if os.path.exists(kubeconfig_path):
-            logging.info(f"Kubeconfig found at: {kubeconfig_path}")
-        else:
-            logging.warning(f"Kubeconfig file not found at: {kubeconfig_path}")
-        return kubeconfig_path
-    except Exception as e:
-        logging.error(f"Error in get_kubeconfig_path: {str(e)}")
-        return None
+def pod_info(namespace="default"):
+    """Retrieves basic pod information for a given namespace."""
+    v1 = client.CoreV1Api()
+    pods = v1.list_namespaced_pod(namespace=namespace)
 
-
-def load_kube_config():
-    """Load kubeconfig using the dynamically determined path."""
-    try:
-        config_path = get_kubeconfig_path()
-        if config_path:
-            config.load_kube_config(config_file=config_path)
-        else:
-            logging.error("Kubeconfig path is invalid. Cannot load config.")
-    except Exception as e:
-        logging.error(f"Error loading kube config: {str(e)}")
-
-
-def generate_prompt(query):
-    """Generates a prompt based on the query."""
-    try:
-        prompt = f"You asked about: '{query}'. Provide relevant Kubernetes information."
-        logging.info(f"Generated Prompt: {prompt}")
-        return prompt
-    except Exception as e:
-        logging.error(f"Error in generate_prompt: {str(e)}")
-        return "Error generating prompt."
-
-
-def get_agent_response(query):
-    """Uses LangChain's OpenAI model to generate a response based on the prompt."""
-    try:
-        # Aggregate cluster information and generate a prompt
-        combined_info = aggregate_info()
-        formatted_prompt = generate_prompt(combined_info, query)
-        logging.info(f"Formatted Prompt: {formatted_prompt}")
-
-        # Create an OpenAI object using LangChain
-        openai_llm = OpenAI(temperature=0.3, openai_api_key=openai_api_key)
-        llm_response = openai_llm(formatted_prompt)
-
-        logging.info(f"OpenAI LLM Response: {llm_response}")
-        return llm_response.strip()
-    except Exception as e:
-        logging.error(f"Error in get_agent_response: {str(e)}")
-        return "Error generating response from OpenAI."
-
-
-def aggregate_info():
-    """Aggregate various Kubernetes information into a single structure."""
-    try:
-        load_kube_config()
-        # Example of aggregated information, modify with real data as needed
-        cluster_info = get_cluster_info()
-        node_info = get_node_info()
-        namespace_info = get_namespace_info()
-
-        combined_info = {
-            "Cluster Information": cluster_info,
-            "Node Information": node_info,
-            "Namespace Information": namespace_info
+    pod_details = []
+    for pod in pods.items:
+        pod_info = {
+            "pod_name": pod.metadata.name,
+            "namespace": pod.metadata.namespace,
+            "status": pod.status.phase,
+            "node_name": pod.spec.node_name,
+            "containers": [container.name for container in pod.spec.containers]
         }
-        logging.info(f"Aggregated Info: {combined_info}")
-        return combined_info
-    except Exception as e:
-        logging.error(f"Error in aggregate_info: {str(e)}")
-        return {"error": "Failed to aggregate cluster information"}
+        pod_details.append(pod_info)
+
+    logging.info(f"Pod Information for namespace '{namespace}': {pod_details}")
+    return pod_details
 
 
 @app.route('/query', methods=['POST'])
@@ -163,24 +188,35 @@ def create_query():
         # Log the question
         logging.info(f"Received query: {query}")
 
-        # Generate the prompt and use OpenAI to get a response
-        prompt = generate_prompt(query)
-        openai_response = get_agent_response(query)
+        # Aggregate information and generate the prompt
+        combined_info = aggregate_info()
+        prompt = generate_prompt(combined_info, query)
+        print(prompt)
+
+        # Based on the query, respond with either cluster or pod information
+        if "cluster info" in query.lower():
+            answer = cluster_info()
+        elif "pod info" in query.lower():
+            namespace = "default"
+            if "namespace" in query.lower():
+                try:
+                    namespace = query.lower().split("namespace")[1].strip()
+                except IndexError:
+                    namespace = "default"
+            answer = pod_info(namespace)
+        else:
+            answer = str(prompt)
 
         # Log the generated answer
-        logging.info(f"Generated answer: {openai_response}")
+        logging.info(f"Generated answer: {answer}")
 
         # Create the response model
-        response = QueryResponse(query=query, prompt=prompt, answer=openai_response)
+        response = QueryResponse(query=query, prompt=prompt, answer=str(answer))
 
         return jsonify(response.dict())
 
     except ValidationError as e:
-        logging.error(f"Validation error: {e}")
         return jsonify({"error": e.errors()}), 400
-    except Exception as e:
-        logging.error(f"Unexpected error: {str(e)}")
-        return jsonify({"error": "An unexpected error occurred. Please check logs for details."}), 500
 
 
 if __name__ == "__main__":
