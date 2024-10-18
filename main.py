@@ -304,8 +304,12 @@ def create_query():
         # Retrieve detailed cluster information
         combined_info = {
             "Cluster Information": cluster_info(),
-            "Pod Information": pod_info()
-            # Add more information as needed
+            "Node Information": log_cluster_details().get('node_info', {}),
+            "Namespace Information": log_cluster_details().get('namespace_info', {}),
+            "Workload Information": log_cluster_details().get('workload_info', {}),
+            "Service Information": log_cluster_details().get('service_info', {}),
+            "Pod Information": pod_info(),
+            "Container Information": {}
         }
 
         # Generate a concise response based on the combined information and query
