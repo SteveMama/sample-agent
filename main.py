@@ -14,7 +14,6 @@ app = Flask(__name__)
 
 class QueryResponse(BaseModel):
     query: str
-    prompt: str
     answer: str
 
 
