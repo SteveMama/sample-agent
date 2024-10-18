@@ -106,6 +106,41 @@ def pod_info(namespace="default"):
     return pod_details
 
 
+def get_service_namespace(service_name):
+    """
+    Retrieves the namespace where a given service is deployed.
+    """
+    load_kube_config()
+    v1 = client.CoreV1Api()
+    services = v1.list_service_for_all_namespaces()
+
+    for service in services.items:
+        if service.metadata.name == service_name:
+            logging.info(f"Found service '{service_name}' in namespace '{service.metadata.namespace}'")
+            return service.metadata.namespace
+
+    logging.warning(f"Service '{service_name}' not found in any namespace.")
+    return "Service not found"
+
+
+def generate_prompt(cluster_info, pod_info, service_info):
+    """
+    Aggregates information into a concise prompt and logs it.
+    """
+    prompt = (
+        f"Kubernetes Cluster Information:\n"
+        f"- Kubernetes Version: {cluster_info.get('kubernetes_version')}\n"
+        f"- Number of Nodes: {cluster_info.get('number_of_nodes')}\n"
+        f"- Nodes: {', '.join(cluster_info.get('nodes', []))}\n\n"
+        f"Pod Information:\n"
+        f"{pod_info}\n\n"
+        f"Service Information:\n"
+        f"{service_info}"
+    )
+    logging.info(f"Generated Prompt: {prompt}")
+    return prompt
+
+
 @app.route('/query', methods=['POST'])
 def create_query():
     try:
@@ -116,20 +151,28 @@ def create_query():
         # Log the question
         logging.info(f"Received query: {query}")
 
-        log_cluster_details()
+        # Retrieve detailed cluster information
+        cluster_details = cluster_info()
+        pod_details = pod_info()
+        service_name = "harbor"  # Replace this as needed based on query parsing
+        service_namespace = get_service_namespace(service_name)
 
+        # Generate a prompt using the retrieved information
+        prompt = generate_prompt(
+            cluster_info=cluster_details,
+            pod_info=pod_details,
+            service_info=f"Service '{service_name}' is in namespace '{service_namespace}'"
+        )
+
+        # Determine the answer based on the query
         if "cluster info" in query.lower():
-            answer = cluster_info()
+            answer = cluster_details
         elif "pod info" in query.lower():
-            namespace = "default"
-            if "namespace" in query.lower():
-                try:
-                    namespace = query.lower().split("namespace")[1].strip()
-                except IndexError:
-                    namespace = "default"
-            answer = pod_info(namespace)
+            answer = pod_details
+        elif "which namespace" in query.lower() and "service" in query.lower():
+            answer = service_namespace
         else:
-            answer = "Query not recognized. Please specify 'cluster info' or 'pod info'."
+            answer = "Query not recognized. Please specify 'cluster info', 'pod info', or 'which namespace for service'."
 
         # Log the generated answer
         logging.info(f"Generated answer: {answer}")
